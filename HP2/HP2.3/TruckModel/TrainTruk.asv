@@ -1,0 +1,100 @@
+function fitness = TrainTruk(network, iSlope, iDataSet)
+maxTemp = 750; % K
+mass = 20e3; % Kg
+tau = 30; % s
+ch = 40; % K/s;
+ambientTemp = 283; % K
+cb = 3e3; % N
+vMax = 25; % m/s
+vMin = 1; % m/s
+alphaMax = 10; % degrees
+deltaTime = 0.2;
+xMax = 1000;
+gravity = 9.82; % Nm/s^2
+lowBrakePressure = 0.01;
+
+gearEncodingHigh = 1./(1 + exp(-0.7));
+gearEncodingLow = 1./(1 + exp(0.7));
+slopeFunction = GetSlopeAngleFunction(iSlope, iDataSet);
+% @ t = 0;
+x = 0;
+v = 20;
+vDot = 0;
+alpha = slopeFunction(0);
+brakeTemp = 500;
+brakePressure = 0;
+gear = 7;
+
+vMean = v;
+% Forces @ t = 0;
+forceGravity = ForceGravity(0, mass, gravity, alpha);
+forceEB = EngineBrakes(cb, gear);
+forceFB = FoundationBrakes(mass, brakePressure, brakeTemp, maxTemp, gravity);
+
+vDot = Acceleration(vDot, mass, forceGravity, forceFB, forceEB);
+
+
+networkInput = [v/vMax; alpha/alphaMax; brakeTemp/maxTemp; 1];
+wIH = network.wIH;
+wHO = network.wHO;
+
+gearIterDelay = ceil(2/deltaTime);
+gearIter =  gearIterDelay -1;
+numMaxIters = ceil((vMin/deltaTime)*xMax);
+gearUsed = 0.0000001;
+deltaTemp = 0;
+badGear = 0;
+goodGear = 0;
+for iDrive = 1:numMaxIters+1
+
+    gearIter = gearIter + 1;
+    booleanBreak = (xMax <= x) + (v < vMin)  + (max(networkInput) > 1);
+    if booleanBreak > 0
+        break
+    end
+    hiddenNeurons = wIH*networkInput;
+    hiddenNeurons = 1./(1 + exp(-hiddenNeurons));
+    networkOutput = wHO*[hiddenNeurons; 1];
+    networkOutput = 1./(1 + exp(-networkOutput));
+    brakePressure = networkOutput(1);
+    deltaGear = networkOutput(2);
+
+    if (mod(gearIter, gearIterDelay) == 0)
+        gearTemp = gear;
+        gear = gear - sign(deltaGear-gearEncodingLow)*...
+            ((deltaGear > gearEncodingHigh)+(deltaGear < gearEncodingLow));
+        gear = max(gear, 1);
+        gear = min(gear, 10);
+        gearIter = 0;
+        if gear ~= gearTemp
+            gearUsed = 1;
+        end
+    end
+
+    x = x + v*deltaTime;
+    alpha = slopeFunction(x);
+
+    forceGravity = ForceGravity(forceGravity, mass, gravity, alpha);
+    forceEB = EngineBrakes(cb, gear);
+    [brakeTemp, deltaTemp] = UpdateBrakeTemperature(brakeTemp, ambientTemp, deltaTime, ch, tau, brakePressure, lowBrakePressure);
+    forceFB = FoundationBrakes(mass, brakePressure, brakeTemp, maxTemp, gravity);
+
+    vDot = Acceleration(vDot, mass, forceGravity, forceFB, forceEB);
+    v = v + vDot*deltaTime;
+    vMean = vMean + v;
+    networkInput = [v/vMax; alpha/alphaMax; brakeTemp/maxTemp; 1];
+end
+% tripLog(:, :, individual) = tripLogLoop;
+% badJob = (((v > vMax) || (brakeTemp > maxTemp)) && (gear > 1));
+velocityFitness = 0;
+lengthFitness = x/xMax;
+if x >= 1000
+    velocityFitness = (vMean/iDrive)/25;
+else
+    velocityFitness = 0.2*(vMean/iDrive)/25
+end
+
+fitness = gearUsed*(x/vMean);
+
+
+end
